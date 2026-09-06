@@ -75,6 +75,33 @@ reproducible.
 This is not an oversight to tidy up. The pub cache was emptied during
 development and `dart pub get` restored the exact versions from this file.
 
+## Toolchain on this machine
+
+**Flutter's bundled Dart is the authoritative one.** `dart` resolves to
+`~\scoopppslutter\currentin\dart.bat` (Flutter 3.47.2, Dart 3.13.2),
+which scoop placed first on PATH.
+
+**A second Dart exists and is shadowed.** There is also a standalone winget Dart
+at `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Google.DartSDK...\dart-sdkin`,
+coincidentally the same 3.13.2. It is unused. Do not be confused by finding two,
+and do not "fix" it by reordering PATH: one toolchain is deliberate, and D-08
+makes Flutter the direction for all three platforms anyway.
+
+**Anything Android needs JDK 21, and a bare `java` on this machine is JDK 25.**
+Three JDKs are installed:
+
+| Path | Role |
+| --- | --- |
+| `~\jdk21\jdk-21.0.7+6` | what Flutter is pinned to, and the correct one |
+| `C:\Program Files\Eclipse Adoptium\jdk-25...` | **first on PATH**, so bare `java`/`javac` is 25 |
+| `C:\Program Files\Microsoft\jdk-21.0.10...` | machine-scope `JAVA_HOME` |
+
+The Android Gradle Plugin does not support JDK 25. Flutter itself is pinned via
+`flutter config --jdk-dir`, so Flutter-driven builds are fine. But anything that
+invokes Gradle directly, or reads `java` from PATH, will pick up 25 and fail with
+an error that does not mention the JDK at all. Set `JAVA_HOME` for that process
+rather than editing PATH, which is what `sdkmanager` needed during setup.
+
 ## Scope
 
 Transport layer only: discovery, pairing, TLS, framing, file transfer. No UI, no

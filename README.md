@@ -139,6 +139,20 @@ on the same host and from an iPhone on the same Wi-Fi, which enumerated the
 service type, resolved the instance, and displayed the port and TXT records with
 the fingerprint matching the running advertiser.
 
+## Verified against
+
+The suite was last green against:
+
+| | |
+| --- | --- |
+| Dart | 3.13.2 (stable) |
+| Flutter | 3.47.2 (stable) — supplies the Dart above |
+| Android SDK | platform 36, build-tools 36.0.0, platform-tools 37.0.1 |
+| JDK | 21.0.7 (Android Gradle Plugin does not support JDK 25) |
+
+Only the Dart version matters to this package today; the rest is recorded
+because the Android app in D-08 will need it.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
