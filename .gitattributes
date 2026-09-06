@@ -1,0 +1,11 @@
+# Normalise line endings so the repository stores LF and every checkout gets LF,
+# regardless of the contributor's platform or core.autocrlf setting.
+#
+# Added while the repository had a single clone. Doing this later, once others
+# have cloned, turns a settled tree into a whole-file diff on every text file.
+* text=auto eol=lf
+
+# Keep binary files out of the conversion entirely.
+*.png binary
+*.jpg binary
+*.pdf binary
