@@ -1,0 +1,33 @@
+# Dart
+.dart_tool/
+.packages
+build/
+doc/api/
+
+# Local shell helper pointing at this machine's Dart SDK.
+.dartenv
+
+# Retained state written at runtime (D-06). A device private key, its
+# certificate and the pinned-peer store must never reach a public repository.
+device.key.pem
+device.crt.pem
+peers.json
+*.pem
+*.key
+
+# In-flight transfer artefacts (D-12). Deleted on completion and on failure,
+# but ignored so an interrupted run cannot leave one staged.
+*.part
+*.part.json
+
+# Anything received or sent during a manual run.
+received/
+downloads/
+outbox/
+
+# Scratch config directories used when running two instances locally.
+alpha/
+beta/
+
+# Logs from manual runs and instrumentation.
+*.log

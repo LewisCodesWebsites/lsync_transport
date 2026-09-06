@@ -1,0 +1,29 @@
+name: lsync_transport
+description: >-
+  Transport layer for LAN clipboard and file sync: mDNS discovery, pinned-cert
+  TLS, length-prefixed framing and file transfer. No UI, no clipboard.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  # CLI harness argument parsing. Dart team.
+  args: ^2.5.0
+  # X.509 self-signed certificate generation (D-09). dart:io's SecurityContext
+  # can load a certificate but the SDK cannot create one.
+  basic_utils: ^5.7.0
+  # Streaming SHA-256 (D-12, D-13) via startChunkedConversion. Dart team.
+  crypto: ^3.0.3
+  # mDNS querying (D-01). Client only; the advertiser is hand-written because
+  # no non-Flutter Dart package can publish a service.
+  multicast_dns: ^0.3.2
+  # Path joins. Dart team.
+  path: ^1.9.0
+  # RSA keygen and signing behind basic_utils, and directly for the D-09 nonce.
+  pointycastle: ^3.9.1
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0
