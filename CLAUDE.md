@@ -78,11 +78,11 @@ development and `dart pub get` restored the exact versions from this file.
 ## Toolchain on this machine
 
 **Flutter's bundled Dart is the authoritative one.** `dart` resolves to
-`~\scoopppslutter\currentin\dart.bat` (Flutter 3.47.2, Dart 3.13.2),
+`~\scoop\apps\flutter\current\bin\dart.bat` (Flutter 3.47.2, Dart 3.13.2),
 which scoop placed first on PATH.
 
 **A second Dart exists and is shadowed.** There is also a standalone winget Dart
-at `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Google.DartSDK...\dart-sdkin`,
+at `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Google.DartSDK...\dart-sdk\bin`,
 coincidentally the same 3.13.2. It is unused. Do not be confused by finding two,
 and do not "fix" it by reordering PATH: one toolchain is deliberate, and D-08
 makes Flutter the direction for all three platforms anyway.
@@ -101,6 +101,35 @@ The Android Gradle Plugin does not support JDK 25. Flutter itself is pinned via
 invokes Gradle directly, or reads `java` from PATH, will pick up 25 and fail with
 an error that does not mention the JDK at all. Set `JAVA_HOME` for that process
 rather than editing PATH, which is what `sdkmanager` needed during setup.
+
+## Test device
+
+**Xiaomi Redmi Note 11 (2201117TY), Android 13 / API 33, arm64-v8a.**
+
+**It is borrowed, so device time is limited.** Prefer work that can be verified
+on the desktop or in tests, and batch anything that genuinely needs the handset
+rather than reaching for it reflexively.
+
+Two things about this device shape the work:
+
+**Android 13 requires the runtime `POST_NOTIFICATIONS` permission.** D-04's whole
+phone-to-PC clipboard path is a notification the user taps, so on API 33 the
+permission must be *requested at runtime* and the request result handled.
+Declaring it in the manifest is not enough: the notification simply never
+appears, silently, and D-04's headline feature looks broken rather than
+unpermitted.
+
+**MIUI kills background apps far more aggressively than stock Android.**
+Autostart is restricted by default and battery optimisation terminates services
+that stock Android would leave running. So:
+
+- a failure on this device may not reproduce on stock Android, and
+- a success here does not generalise either, since the app may have been
+  whitelisted by hand during testing.
+
+Treat vendor power policy as a confounder to rule out *first* when background
+behaviour misbehaves. Debugging it as if it were our bug is a whole evening, and
+the symptom — a service that just stops — looks identical to a real defect.
 
 ## Scope
 
