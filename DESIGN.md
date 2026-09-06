@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-06 (rev 13)
+Last updated: 2026-09-06 (rev 14)
 
 ## Problem
 
@@ -682,6 +682,30 @@ moments. The IPv4-only responder heard the phone perfectly well throughout. No
 
 **Consequence.** No dual-stack responder is needed. `tool/ipv6_observe.dart`
 remains as instrumentation for a closed question and can be deleted.
+
+### D-26 Open source, MIT, public from the start
+
+**Status:** decided, irrevocable
+
+**Decision.** Public GitHub repository under the MIT licence, copyright
+`LewisCodesWebsites`.
+
+**Why.** D-06 claims that a short, complete list of what the app stores "is a claim
+that can be verified by reading the code". That sentence is only true if the code
+is readable. A closed-source build would make an entry in this document false.
+Beyond that, every credible tool in this category is open — KDE Connect,
+LocalSend, Syncthing — and a closed utility that asks people to pair devices and
+trust it with their clipboard has a credibility problem it cannot argue its way
+out of.
+
+**Rejected.** *GPL-3.0,* which would force derivative works to stay open: a
+reasonable choice for a project defending a commercial position, and this has none.
+*A private repository,* which breaks D-06 and removes the only thing that makes the
+storage claim checkable.
+
+**Cost.** Irrevocable once published. The commit history is public and is part of
+what a reader judges, so it is worth keeping legible rather than dumping work in
+bulk.
 
 ---
 
