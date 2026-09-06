@@ -1,0 +1,16 @@
+tags:
+  # Needs real multicast on the host: a joinable interface, inbound UDP 5353
+  # through the firewall, and no VPN adapter holding the lowest-metric
+  # multicast route. None of that holds in CI, and a discovery test that
+  # silently finds nothing passes for the wrong reason. D-13's point is that
+  # these tests should be real rather than decorative, so this set is opt-in.
+  #
+  #   dart test              the default run, no mDNS
+  #   dart test -P mdns      the discovery tests, on a machine set up for them
+  mdns:
+    skip: 'Needs real multicast on the host. Run with: dart test -P mdns'
+
+presets:
+  mdns:
+    include_tags: mdns
+    run_skipped: true
