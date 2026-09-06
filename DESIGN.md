@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-06 (rev 14)
+Last updated: 2026-09-06 (rev 15)
 
 ## Problem
 
@@ -189,6 +189,22 @@ own premise.
 
 **Cost.** The headline feature is asymmetric, and that asymmetry has to be
 explained in the UI rather than hidden.
+
+**Two further costs, added after the test device was chosen.**
+
+*The notification is a runtime permission, not a manifest line.* Android 13
+(API 33) requires `POST_NOTIFICATIONS` to be requested at runtime. Declaring it in
+the manifest alone means the notification silently never appears, so the headline
+feature looks broken rather than unpermitted. The request has to be part of
+first-run, and refusing it has to be handled rather than left to fail quietly.
+
+*Every send shows a system toast the app cannot suppress.* Since Android 12, an
+app reading clipboard content that originated elsewhere triggers a system message
+naming both apps, for example "lsync pasted from Chrome". So a single clipboard
+send costs the user a notification tap plus a toast they did not ask for, and half
+of that is outside our control. It does not change the decision, since every
+alternative is worse for the reasons above, but it is what the feature actually
+feels like in use and should not surprise anyone reading this later.
 
 **Revisit if.** Android ever exposes a sanctioned API for this. It has not in six
 major versions.
