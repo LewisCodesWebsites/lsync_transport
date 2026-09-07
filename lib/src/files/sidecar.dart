@@ -1,22 +1,26 @@
 import 'dart:convert';
 import 'dart:io';
 
-/// The offset record that sits beside an in-progress `.part` file (D-12).
+/// The record that sits beside an in-progress `.part` file (D-12), and what
+/// makes resume possible (D-07).
 ///
-/// Nothing reads this back yet. Resume is the second pass (D-07), and this is
-/// the piece that lets it be added without restructuring the receiver: the file
-/// is written and kept current now, so resume only has to learn to read it.
+/// It identifies the transfer by what the offer carries — size and whole-file
+/// digest — rather than by a transfer ID. The content is the thing resume needs
+/// to recognise: an ID identifies an *attempt*, and two attempts at the same
+/// file should share a partial rather than fork it. A random per-send ID would
+/// actively prevent resume, since a reconnect generates a new one.
 ///
-/// It is an in-flight artifact, so D-06 does not retain it: it is deleted on
-/// completion and on failure alike, and nothing survives a finished or failed
-/// transfer.
+/// Since the D-06 amendment this outlives a failed transfer, so it is retained
+/// state in the ordinary sense. It is deleted on success, on a content error,
+/// and by the user.
 class TransferSidecar {
   TransferSidecar(this.path);
 
-  static const int _formatVersion = 1;
+  /// Bumped from 1, which held a transfer ID and an offset and could not
+  /// support resume. A version 1 file is unreadable here and is treated as no
+  /// sidecar at all, which discards the partial rather than guessing.
+  static const int formatVersion = 2;
 
-  /// Sidecar for a given `.part` file. Sits beside it, in the destination
-  /// directory, for the reasons D-12 gives for the `.part` file itself.
   factory TransferSidecar.forPartFile(String partPath) =>
       TransferSidecar('$partPath.json');
 
@@ -24,20 +28,31 @@ class TransferSidecar {
 
   File get file => File(path);
 
-  /// Records that [offset] bytes are durably on disk.
+  /// Records progress.
   ///
-  /// Call only after flushing the `.part` file. The recorded offset must never
-  /// run ahead of what is actually written, or resume would later skip bytes
-  /// that were never stored.
+  /// [prefixSha256] is the digest of the first [offset] bytes, and its presence
+  /// is what makes the record resumable. It can only be produced when a session
+  /// ends in a way the receiver catches, because the running digest can be
+  /// finalised then and not before: SHA-256 state cannot be snapshotted
+  /// mid-stream without re-reading the file, which on a large partial would
+  /// cost a full read per checkpoint.
+  ///
+  /// A periodic checkpoint therefore writes the offset with no prefix. That is
+  /// deliberately not resumable: it exists so an abandoned `.part` always has a
+  /// sidecar beside it and can be recognised, not so it can be trusted.
   Future<void> write({
-    required String transferId,
+    required int size,
+    required String sha256,
     required int offset,
+    String? prefixSha256,
   }) async {
     await file.writeAsString(
       jsonEncode(<String, Object?>{
-        'version': _formatVersion,
-        'id': transferId,
+        'version': formatVersion,
+        'size': size,
+        'sha256': sha256,
         'offset': offset,
+        if (prefixSha256 != null) 'prefixSha256': prefixSha256,
       }),
       flush: true,
     );
@@ -45,18 +60,33 @@ class TransferSidecar {
 
   /// Reads the record back, or null when there is none or it is unusable.
   ///
-  /// Unused in this pass. Present so the shape of the file is fixed now rather
-  /// than negotiated later.
+  /// Anything malformed reads as absent. A partial with an unreadable sidecar
+  /// is discarded, which is the safe direction.
   Future<SidecarRecord?> read() async {
     if (!await file.exists()) return null;
     try {
       final decoded = jsonDecode(await file.readAsString());
       if (decoded is! Map<String, Object?>) return null;
-      if (decoded['version'] != _formatVersion) return null;
-      final id = decoded['id'];
+      if (decoded['version'] != formatVersion) return null;
+
+      final size = decoded['size'];
+      final sha256 = decoded['sha256'];
       final offset = decoded['offset'];
-      if (id is! String || offset is! int || offset < 0) return null;
-      return SidecarRecord(transferId: id, offset: offset);
+      final prefix = decoded['prefixSha256'];
+
+      if (size is! int || size < 0) return null;
+      if (sha256 is! String || sha256.length != 64) return null;
+      if (offset is! int || offset < 0 || offset > size) return null;
+      if (prefix != null && (prefix is! String || prefix.length != 64)) {
+        return null;
+      }
+
+      return SidecarRecord(
+        size: size,
+        sha256: sha256,
+        offset: offset,
+        prefixSha256: prefix as String?,
+      );
     } on FormatException {
       return null;
     }
@@ -72,8 +102,34 @@ class TransferSidecar {
 }
 
 class SidecarRecord {
-  const SidecarRecord({required this.transferId, required this.offset});
+  const SidecarRecord({
+    required this.size,
+    required this.sha256,
+    required this.offset,
+    this.prefixSha256,
+  });
 
-  final String transferId;
+  /// Size of the whole file, from the offer that created this partial.
+  final int size;
+
+  /// Whole-file digest, from the offer (D-17).
+  final String sha256;
+
+  /// Bytes durably written.
   final int offset;
+
+  /// Digest of the first [offset] bytes, when the session ended cleanly enough
+  /// to compute one.
+  final String? prefixSha256;
+
+  /// Only a record carrying a prefix digest can be resumed. Without it the
+  /// partial cannot be checked before bytes are appended to it, and appending
+  /// to something unverified is how resume becomes a source of corruption
+  /// (D-07's own grounds for abandoning the feature).
+  bool get isResumable => prefixSha256 != null && offset > 0;
+
+  /// True when this record describes the file now being offered. Same name but
+  /// different content must discard the partial, never append to it.
+  bool describes({required int size, required String sha256}) =>
+      this.size == size && this.sha256 == sha256;
 }

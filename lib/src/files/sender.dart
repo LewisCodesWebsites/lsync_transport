@@ -9,17 +9,35 @@ import '../transport/protocol.dart';
 import '../transport/session.dart';
 import 'streaming_digest.dart';
 
-/// Sends one file over an authenticated session (D-10, D-12).
+/// Remembers a file's digest for the life of the process, so repeated
+/// reconnects do not each pay D-17's full read.
+///
+/// In memory only, deliberately. Persisting it would be new retained state of
+/// exactly the kind D-06 refuses, and the case worth covering is several
+/// reconnects within one session on a flaky link, which memory covers. Keyed on
+/// path, size and modification time, so an edited file is re-hashed rather than
+/// sent under a stale digest.
+class _DigestCache {
+  static final Map<String, String> _entries = <String, String>{};
+
+  static String _key(String path, int size, DateTime modified) =>
+      '$path|$size|${modified.microsecondsSinceEpoch}';
+
+  static String? get(String path, int size, DateTime modified) =>
+      _entries[_key(path, size, modified)];
+
+  static void put(String path, int size, DateTime modified, String digest) {
+    _entries[_key(path, size, modified)] = digest;
+  }
+}
+
+/// Sends one file over an authenticated session (D-10, D-12, D-07).
 class FileSender {
   /// Transfers [file] and returns once the receiver has confirmed the hash.
   ///
-  /// The file is hashed in a first pass and the digest travels in the offer, so
-  /// the receiver can check what it stored against what was promised before it
-  /// renames anything into place. That costs one extra read of the file; the
-  /// alternative, a trailing digest sent after the body, saves the read but
-  /// leaves the receiver unable to reject a bad transfer until the end anyway.
-  ///
-  /// Throws [TransferException] if the receiver refuses or the hashes differ.
+  /// The digest travels in the offer (D-17), which is what lets the receiver
+  /// recognise a partial it already holds before any bytes move. The receiver
+  /// replies with how much it has, and the send starts there.
   static Future<void> send({
     required PeerSession session,
     required File file,
@@ -31,7 +49,17 @@ class FileSender {
     }
 
     final size = await file.length();
-    final sha256 = await sha256OfFile(file);
+    final modified = await file.lastModified();
+    var sha256 = _DigestCache.get(file.path, size, modified);
+    if (sha256 == null) {
+      sha256 = await sha256OfFile(file);
+      _DigestCache.put(file.path, size, modified, sha256);
+    }
+
+    // Correlates the frames of one session. Deliberately not the resume key:
+    // an ID identifies an attempt, and two attempts at the same file should
+    // share a partial rather than fork it. Resume is keyed on name, size and
+    // digest, all of which the offer already carries.
     final transferId = toHex(randomBytes(16));
     final name = asName ?? p.basename(file.path);
 
@@ -58,10 +86,19 @@ class FileSender {
       throw TransferException('expected an accept, got "${response.type}"');
     }
 
+    final have = response.header['have'];
+    if (have is! int || have < 0 || have > size) {
+      throw TransferException(
+        'receiver asked to resume from an impossible offset: $have',
+      );
+    }
+
     final handle = await file.open();
     try {
-      var offset = 0;
-      onProgress?.call(0, size);
+      var offset = have;
+      if (offset > 0) await handle.setPosition(offset);
+      onProgress?.call(offset, size);
+
       while (offset < size) {
         final want = math.min(chunkSize, size - offset);
         final bytes = await handle.read(want);
@@ -79,9 +116,9 @@ class FileSender {
           },
           bytes,
         );
-        // Flushing each chunk is what applies backpressure: without it the whole
-        // file would queue in the socket's write buffer, which is exactly the
-        // memory blow-up D-10 exists to avoid.
+        // Flushing each chunk is what applies backpressure: without it the
+        // whole file would queue in the socket's write buffer, which is exactly
+        // the memory blow-up D-10 exists to avoid.
         await session.socket.flush();
         offset += bytes.length;
         onProgress?.call(offset, size);
