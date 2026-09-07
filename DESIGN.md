@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-07 (rev 16)
+Last updated: 2026-09-07 (rev 17)
 
 ## Problem
 
@@ -723,52 +723,61 @@ storage claim checkable.
 what a reader judges, so it is worth keeping legible rather than dumping work in
 bulk.
 
-### D-27 Android walking skeleton: passed over USB, LAN path outstanding
+### D-27 Android walking skeleton: passed, over the LAN
 
-**Status:** milestone passed, with one condition unmet
+**Status:** milestone passed
 
-**What passed.** The Redmi Note 11 running `lsync_app` paired with the laptop over
-a typed `host:port`, both ends displaying `422 771`, and sent an 8 MB generated
-file. The digest agreed three ways: computed on the phone before sending,
+**What passed.** The Redmi Note 11 running `lsync_app` paired with the laptop
+over a typed `host:port` and sent an 8 MB generated file. Both ends displayed
+`480 747`. The digest agreed three ways: computed on the phone before sending,
 recomputed by the receiver and echoed back, and checked independently with
 `sha256sum` against the file on disk
-(`c37d27554b27e2be0e11468811bda42a806cefd814722896f91ddd59eee4e3f1`, 8388608
+(`735b78c532f852de7390599dba6fe30d392dd8528d898386bb117ed8e6784390`, 8388608
 bytes). No `.part` or sidecar survived, so D-06 held on a real handset.
 
-That exercises the whole transport on Android: TLS with a pinned self-signed
+**Over the LAN.** Phone `192.168.1.240` to laptop `192.168.1.241:4917` over
+Wi-Fi, with `adb reverse --list` empty for the whole run so the USB path could
+not have carried it. **D-01's manual `host:port` fallback is now proven between
+two machines**, which it had never been.
+
+This exercises the whole transport on Android: TLS with a pinned self-signed
 certificate (D-09), the asymmetric handshake, the D-02 comparison as a real user
 action, length-prefixed framing (D-10), chunked transfer, and atomic rename
 (D-12). Built against `lsync_transport` commit
 `dd311d297bb5ba38fb18c5182ebddfb6ed72fa42`.
 
-**The condition it did not meet.** It ran over `adb reverse tcp:4917 tcp:4917`,
-a USB tunnel, with the phone dialling `127.0.0.1:4917`. **The LAN path is
-unproven.** D-01's manual `host:port` fallback has still never carried a
-connection between two machines.
+**The earlier USB run.** An first attempt passed over an `adb reverse` tunnel
+while the LAN was blocked. That result stands on its own but is now superseded,
+and is kept here only because the reason the LAN was blocked is the instructive
+part.
 
-**Why.** The Wi-Fi does not bridge traffic between wireless clients. The phone's
-ARP for the laptop returns FAILED while its ARP for the router resolves; both
-devices reach the router and the internet; laptop routing to the phone correctly
-selects Wi-Fi and Tailscale is logged out, so D-20's wrong-interface story does
-not apply. Same SSID, same BSSID, same channel. BT Smart Hub Manager exposes no
-client-isolation setting, so there is nothing to switch off.
+**A wrong conclusion, corrected.** The blockage was attributed to Wi-Fi client
+isolation: the phone's ARP for the laptop returned FAILED while its ARP for the
+router resolved, both devices reached the router and the internet, laptop routing
+was correct and Tailscale was logged out. The hub exposes no isolation setting,
+which seemed to close the case.
 
-**This narrows what D-01 proved.** Every cross-machine success recorded there was
-*multicast*, which this AP does forward. The iPhone enumerated and resolved the
-service but never opened a TCP connection. Unicast between two devices on this
-network has never worked, and was not tested until now.
+It was wrong. **Portmaster, a third-party filtering driver, was installed at the
+time.** With it removed and nothing else changed, the phone's ARP for the laptop
+resolves and a plain `nc` connects to port 4917, confirmed by negative controls
+that correctly fail on a closed port and a nonexistent host, and by the listener
+logging the inbound connection itself.
+
+The gap in method was specific and worth naming: Windows Firewall rules and
+profiles were enumerated thoroughly, and **the possibility of a third-party
+filtering driver was never checked at all**. The ARP failure was the one result
+that did not fit the isolation story, and it was treated as the strongest
+evidence rather than as the anomaly it was. A ping test was also read as
+corroboration when Windows blocks inbound ICMP on the Public profile by default,
+so it could never have succeeded either way.
 
 **Keygen, the number D-18 wanted.** 4199 ms on the Redmi against D-18's estimate
 of roughly a second on the laptop: **4.2x slower**. Running it off the UI thread
 was necessary rather than precautionary, since four seconds of frozen first launch
-with nothing on screen reads as a broken app. One caveat on the figure: it was
-read off a photograph of the handset, not captured as text. MIUI denied
-`pm clear` to the shell user, so the key could not be regenerated to capture it
-properly, and it remains a single sample.
-
-**What would close this.** Any network that bridges its clients: an Ethernet
-cable to the hub, a phone hotspot, or a different Wi-Fi. Until then the LAN half
-of D-01 stays a claim rather than a result.
+with nothing on screen reads as a broken app. One caveat: the figure was read off
+a photograph of the handset rather than captured as text, and MIUI denies
+`pm clear` to the shell user so the key could not be regenerated to measure it
+again. It remains a single sample.
 
 ---
 
