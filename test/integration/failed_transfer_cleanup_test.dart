@@ -123,7 +123,12 @@ void main() {
         isFalse,
         reason: 'a file that failed its hash must never be renamed into place',
       );
-      expect(await transferLeftovers(downloads), isEmpty);
+      expect(
+        await transferLeftovers(downloads),
+        isEmpty,
+        reason: 'a content error still discards: those bytes are known bad, '
+            'and resuming from them would fail the same way forever',
+      );
       expect(
         connection.server.failures,
         isNotEmpty,
@@ -134,10 +139,12 @@ void main() {
   );
 
   test(
-    'a connection dropped mid-transfer leaves no .part and no sidecar behind',
+    'a connection dropped mid-transfer keeps a resumable partial',
     () async {
-      // This pass fails loudly and deletes the partial (D-07). Resume changes
-      // that, and this test is what will have to change with it.
+      // Changed with the D-06 amendment. Before resume this asserted that
+      // nothing survived; now an interruption must keep the partial, because
+      // that partial is the whole point of D-07. A named, obviously incomplete
+      // file beside its destination is not hidden state.
       final connection = await connect();
       const size = 8 * 1024 * 1024;
 
@@ -148,22 +155,37 @@ void main() {
         declaredSha256: '0' * 64,
       );
       expect(accept.type, msgFileAccept);
+      expect(accept.header['have'], 0, reason: 'nothing to resume from yet');
 
-      // Enough to get past the sidecar interval, then vanish.
       await sendChunks(connection.session, 5 * 1024 * 1024);
       connection.session.socket.destroy();
 
-      // Give the receiver a moment to notice and clean up.
-      for (var attempt = 0; attempt < 50; attempt++) {
-        if ((await transferLeftovers(downloads)).isEmpty) break;
+      // Give the receiver a moment to notice and write its checkpoint.
+      SidecarRecord? record;
+      final sidecar = TransferSidecar.forPartFile(
+        p.join(downloads.path, 'interrupted.bin.part'),
+      );
+      for (var attempt = 0; attempt < 60; attempt++) {
+        record = await sidecar.read();
+        if (record != null && record.isResumable) break;
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
 
       expect(
-        await transferLeftovers(downloads),
-        isEmpty,
-        reason: 'D-06: nothing survives a failed transfer',
+        await File(p.join(downloads.path, 'interrupted.bin.part')).exists(),
+        isTrue,
+        reason: 'an interrupted transfer must keep its partial',
       );
+      expect(record, isNotNull);
+      expect(
+        record!.isResumable,
+        isTrue,
+        reason: 'the sidecar must carry a prefix digest, or the next attempt '
+            'cannot check the partial before appending to it',
+      );
+      expect(record.offset, greaterThan(0));
+
+      // Still not renamed into place: incomplete is not complete.
       expect(
         await File(p.join(downloads.path, 'interrupted.bin')).exists(),
         isFalse,

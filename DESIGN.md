@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-07 (rev 19)
+Last updated: 2026-09-07 (rev 20)
 
 ## Problem
 
@@ -254,10 +254,47 @@ platform keychain integration.
 certificate fingerprints, device names, and which pairing is the current clipboard
 bond. Nothing else is retained.
 
-This governs *retained* state, meaning anything that outlives the operation that
-created it. In-flight transfer artifacts (the `.part` file and offset sidecar in
-D-12) are outside its scope, and the test is that they are deleted on both
-completion and failure. Nothing survives a finished or failed transfer.
+This governs *retained* state, meaning anything the app keeps **invisibly**.
+That is the distinction, and it is not the same as the original test.
+
+**Amended for resume (rev 20).** The original wording said in-flight artifacts
+were outside scope because "they are deleted on both completion and failure".
+Resume (D-07) requires a partial to survive a failure, which by that test makes
+it retained state and puts it inside a list that says "nothing else". The
+distinction that survives is not *how long* something lasts but *whether the
+user can see it*:
+
+- **Invisible state** is what this entry restricts, and the list above is
+  complete. Keys, fingerprints, device names, the clipboard bond. Nothing else.
+- **A partial transfer is visible.** `<name>.part` sits in the destination the
+  user chose (D-12), obviously incomplete and obviously named. They can see it
+  and delete it.
+
+**Partials therefore survive with no expiry**, until resumed, replaced, or
+deleted by the user.
+
+*Why no expiry.* This is what every browser already does: Chrome leaves
+`.crdownload`, Firefox leaves `.part`, both indefinitely and both in the
+download folder. Users recognise the pattern, and following an established
+convention beats inventing an expiry policy that would need defending.
+
+**Rejected.** *A fixed lifetime:* requires a timestamp in the sidecar, which is
+the same class of field this entry refused for paired-at, so the entry would be
+amended twice over, and the number chosen would be arbitrary. *Session-only
+survival:* the cleanest privacy story, but it removes resume from precisely the
+case D-07 exists for, a phone that drops Wi-Fi and is then killed by MIUI, and it
+contradicts D-12's promise that the offset survives a restart.
+
+**Still deleted immediately:** a completed transfer, and a transfer that failed
+because the *content* was wrong rather than the connection breaking. A digest
+mismatch, a size overrun or an out-of-order chunk all discard, because those
+bytes are known bad and resuming from them would fail the same way forever.
+
+**Revisit if.** A destination is ever somewhere the user cannot see. The argument
+above holds only while the partial is visible; on desktop D-12 puts it in a real
+folder, but if a future Android build writes into app-private storage the
+partial becomes hidden and this reasoning stops applying. At that point the
+partial is invisible retained state and this entry must be reopened.
 
 **Rejected.** *Transfer history:* useful, but a log of filenames is still a record
 of user activity, and it would need a clear-all to be defensible. *A paired-at
@@ -277,7 +314,7 @@ case it should be opt-in and clearable.
 
 ### D-07 Resume interrupted transfers, but not first
 
-**Status:** decided, sequenced
+**Status:** decided, sequenced, **both passes built (rev 20)**
 
 **Decision.** A transfer interrupted by a dropped connection resumes from its last
 confirmed offset. Implementation order: build fail-loudly-and-delete-the-partial
@@ -294,6 +331,28 @@ main defence against it stalling half-built.
 **Cost.** Requires a transfer ID stable across reconnects, offset tracking, a
 holding location for partial files, and integrity checking that works across a
 split session.
+
+**Built (rev 20).** Transfer identity is name, size and whole-file digest, with
+no transfer ID: an ID identifies an *attempt*, and two attempts at the same file
+should share a partial rather than fork it. The receiver decides the offset,
+because it holds the bytes and the sender cannot know what a crash left. The
+sidecar carries a digest of the partial's first N bytes, verified before a single
+byte is appended; without it corruption surfaces only at the end, unattributable,
+forcing a full restart, which is the outcome named below as grounds for
+abandoning the feature. The sender caches the whole-file digest in memory only,
+keyed on path, size and mtime, so repeated reconnects in one session do not each
+pay D-17's full read; it is never persisted, so it adds no retained state.
+
+D-13's killed-connection test is live and passes 6/6: a transfer killed at 50%
+resumes to a digest identical to an uninterrupted one, checked against the bytes
+on disk rather than the sender's claim, and asserting that it genuinely resumed
+rather than quietly starting over.
+
+**Known limit.** A prefix digest can only be written when a session ends in a way
+the receiver catches, because SHA-256 state cannot be snapshotted mid-stream and
+recomputing it per checkpoint would cost a full read each time. A hard process
+kill therefore leaves an unverifiable partial, which the next attempt discards.
+Resume survives dropped connections and app exits, not `SIGKILL`.
 
 **Revisit if.** Resume proves to be a source of corruption bugs, in which case
 fail-loudly is a legitimate place to stop.

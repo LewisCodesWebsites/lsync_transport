@@ -25,10 +25,10 @@ What is here:
 | Length-prefixed frames, JSON header, 64 KiB body chunks (D-10) | `lib/src/transport/frame.dart` |
 | Partial files and offset sidecar (D-12) | `lib/src/files/` |
 
-Resume (D-07) is deliberately not implemented. This pass fails loudly and
-deletes the partial. The sidecar is written and kept current throughout a
-transfer, so resume is a matter of teaching the receiver to read it back rather
-than restructuring anything.
+Resume (D-07) is implemented. A transfer interrupted by a dropped connection
+keeps its `.part` and sidecar and continues from the last verified offset, the
+way a browser resumes a download. A transfer that fails because the *content*
+was wrong still discards, because those bytes are known bad.
 
 ## Running it
 
@@ -86,8 +86,10 @@ separation exists to avoid. The first test in that file checks the multicast
 precondition directly, so a misconfigured machine fails with a usable message
 rather than an empty browse.
 
-The killed-connection test is skipped with a reason: it belongs to resume, which
-D-07 sequences second. It documents what it will need.
+D-13's killed-connection test is live: a transfer killed at 50% resumes to a
+digest identical to an uninterrupted one, verified against the bytes on disk
+rather than the sender's report, and asserting it genuinely resumed rather than
+quietly starting over.
 
 ## What touches disk
 
@@ -99,9 +101,13 @@ Per D-06, and asserted by the integration tests:
 <config>/peers.json        peer fingerprints, device names, clipboard bond
 ```
 
-Nothing else is retained. During a transfer, and only during one, `<name>.part`
-and `<name>.part.json` sit in the destination directory; both are removed on
-completion and on failure alike.
+Nothing else is retained *invisibly*, which is the distinction D-06 draws.
+
+An interrupted transfer leaves `<name>.part` and `<name>.part.json` in the
+destination directory, and they stay until the transfer is resumed, replaced, or
+deleted by hand — the same thing Chrome does with `.crdownload` and Firefox with
+`.part`. They are visible and obviously incomplete, in a folder the user chose.
+Both are removed on completion, and on a failure caused by bad content.
 
 ## Known limitations
 
