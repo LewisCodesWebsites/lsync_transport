@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-07 (rev 17)
+Last updated: 2026-09-07 (rev 18)
 
 ## Problem
 
@@ -85,13 +85,29 @@ cannot both bind 5353. The responder therefore also answers by unicast when a
 query arrives from a source port other than 5353, which is what RFC 6762 section
 6.7 requires anyway.
 
-**Proven cross-machine (rev 13).** An iPhone on the same Wi-Fi, running a
+**Proven cross-machine, in two halves.** The two halves prove different things
+and neither substitutes for the other.
+
+*Discovery and resolution (rev 13).* An iPhone on the same Wi-Fi, running a
 third-party DNS-SD browser, enumerated `_lsync._tcp` in its service type list,
 resolved the instance, and displayed `lsync31136.local:4917`, address
 `192.168.1.241`, and both TXT keys with the fingerprint matching the running
 advertiser character for character. Apple's implementation is independent of this
 codebase and shares none of its assumptions, so this validates the hand-written
-responder against something we do not control, on a machine we do not control.
+responder, and the records it emits, against something we do not control on a
+machine we do not control. It proves the advertisement is correct. It proves
+nothing about connecting, because the iPhone never opened a socket to us: every
+byte of it was multicast.
+
+*Connection and transfer (rev 18).* The Android app dialled a typed
+`192.168.1.241:4917` over Wi-Fi, paired with digits compared on both screens
+(`480 747`), and transferred an 8 MB file. The digest agreed three ways: computed
+before sending, recomputed by the receiver and echoed back, and checked
+independently with `sha256sum` against the bytes on disk. No `.part` or sidecar
+survived. `adb reverse --list` was empty for the whole run, so the USB tunnel used
+in an earlier attempt could not have carried it. This proves the manual
+`host:port` fallback carries a real connection between two machines, which is what
+the rev 13 result could not show.
 
 That result took from 2026-09-03 to 2026-09-06 and six wrong explanations to
 reach. The history is preserved in D-19 through D-25 rather than tidied away,
@@ -542,9 +558,10 @@ choice, or the tool is used on shared tailnets rather than personal ones.
 **Revisit if.** Interface enumeration behaves differently on Android, which is
 where it is most likely to.
 
-### D-21 Inbound multicast starvation, cause unknown
+### D-21 Inbound multicast starvation, Portmaster the leading cause
 
-**Status:** real, unattributed; affects the interop layer only after D-23
+**Status:** real; leading explanation identified, unproven by choice; affects the
+interop layer only after D-23
 
 **Originally written as** "one lsync advertiser per host", which understated it by
 a wide margin. The constraint is not that two lsync instances conflict. It is that
@@ -590,6 +607,40 @@ combination cannot be enumerated on a stranger's machine. The right response is
 D-19: distinguish "found nobody" from "cannot send or receive at all", and treat
 the manual address path as designed rather than as a consolation. That conclusion
 survives every revision of the mechanism because it never depended on one.
+
+**Leading explanation (rev 18): Portmaster.** A third-party filtering driver was
+installed on the laptop throughout the period this entry describes, and was
+deleted before the D-27 LAN retest. With it gone and nothing else changed, two
+separate things that had failed now work: the phone's ARP for the laptop resolves
+where it previously returned FAILED, and TCP from the phone to port 4917 connects,
+confirmed by negative controls that correctly fail on a closed port and a
+nonexistent host, and by the listener logging the inbound connection itself.
+
+One filtering driver, two symptoms, both absent once it was removed. It also fits
+better than the alternatives already excluded here: it does not require the
+"Windows does not fan multicast out to every `SO_REUSEADDR` binder" hypothesis,
+which `svchost` holding `0.0.0.0:5353` during a passing run contradicts, and it
+does not require Wi-Fi client isolation, which the hub exposes no setting for and
+which the working LAN transfer now refutes outright.
+
+**One part that does not fit cleanly.** Portmaster filters through the Windows
+Filtering Platform, and ARP is resolved below the layers WFP normally reaches. No
+mechanism has been established by which it would prevent ARP resolution. That
+residual gap is a real weakness in this explanation and is the reason it is
+recorded as leading rather than settled.
+
+**Unproven, and staying that way by choice.** Confirming it means reinstalling the
+driver that caused the problem and re-running the multicast precondition test
+underneath it. Nobody is going to do that, and the entry should not pretend the
+question is still open pending work that will not happen. Two further reasons it
+could not be cleanly closed even then: the adapter re-association inside the
+original sequence means those rows can never be re-read as measurements of one
+machine, and the driver is gone, so the conditions cannot be reconstructed.
+
+**What this vindicates.** The withdrawn rev 9 table pointed at Portmaster and was
+withdrawn because of a real confound. The confound was genuine and withdrawing was
+correct on the evidence available; the signal underneath it was not noise.
+Withdrawing an attribution is not the same as the attribution being wrong.
 
 **Options if confirmed.** Detect the starvation and fail legibly into the manual
 address path (D-19). Move peer discovery to a private multicast group and port
