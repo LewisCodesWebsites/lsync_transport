@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-07 (rev 18)
+Last updated: 2026-09-07 (rev 19)
 
 ## Problem
 
@@ -637,7 +637,38 @@ could not be cleanly closed even then: the adapter re-association inside the
 original sequence means those rows can never be re-read as measurements of one
 machine, and the driver is gone, so the conditions cannot be reconstructed.
 
-**What this vindicates.** The withdrawn rev 9 table pointed at Portmaster and was
+**Provenance of the rev 9 table (rev 19).** The table combined measurements from
+two different operators and did not mark which came from where. Attributed:
+
+| Condition | Result | Run by |
+| --- | --- | --- |
+| Baseline: Portmaster running, Brave running | 0/6 | assistant |
+| Brave closed, Portmaster running | 6/6 | assistant |
+| Brave restored, Portmaster running | 1/6 | assistant |
+| **Portmaster stopped, Brave running** | **6/6** | **author, separately, on the 6th** |
+
+The fourth row is the load-bearing one and was never the assistant's: it is the
+only condition that varies Portmaster while holding Brave constant, and the
+assistant never manipulated Portmaster or knew it was installed. It was reported
+as a single unlabelled table, and the assistant later described the whole table as
+its own work and then, on finding a row it could not reproduce, doubted the row
+rather than the labelling.
+
+**Mixing unlabelled sources is itself the error**, independently of whether any
+row was right. A table whose rows come from different operators, machines states
+and times reads as one experiment and cannot be audited as one. Every row in this
+document should carry who ran it.
+
+**What the attributed table actually says.** Taken at face value the four rows do
+not blame Portmaster alone: closing Brave with Portmaster still running also gave
+6/6. Failure needed both present, which is the interaction rev 9 originally
+claimed. The independent D-27 result implicates Portmaster on its own for the
+*unicast* symptom, so the cleanest reading is that Portmaster is necessary for the
+multicast symptom and possibly not sufficient. The adapter re-association still
+sits inside that sequence, so the rows remain uncomparable as a set and this
+reading cannot be tightened.
+
+**What this vindicates.** The withdrawn table pointed at Portmaster and was
 withdrawn because of a real confound. The confound was genuine and withdrawing was
 correct on the evidence available; the signal underneath it was not noise.
 Withdrawing an attribution is not the same as the attribution being wrong.
