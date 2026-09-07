@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-06 (rev 15)
+Last updated: 2026-09-07 (rev 16)
 
 ## Problem
 
@@ -722,6 +722,53 @@ storage claim checkable.
 **Cost.** Irrevocable once published. The commit history is public and is part of
 what a reader judges, so it is worth keeping legible rather than dumping work in
 bulk.
+
+### D-27 Android walking skeleton: passed over USB, LAN path outstanding
+
+**Status:** milestone passed, with one condition unmet
+
+**What passed.** The Redmi Note 11 running `lsync_app` paired with the laptop over
+a typed `host:port`, both ends displaying `422 771`, and sent an 8 MB generated
+file. The digest agreed three ways: computed on the phone before sending,
+recomputed by the receiver and echoed back, and checked independently with
+`sha256sum` against the file on disk
+(`c37d27554b27e2be0e11468811bda42a806cefd814722896f91ddd59eee4e3f1`, 8388608
+bytes). No `.part` or sidecar survived, so D-06 held on a real handset.
+
+That exercises the whole transport on Android: TLS with a pinned self-signed
+certificate (D-09), the asymmetric handshake, the D-02 comparison as a real user
+action, length-prefixed framing (D-10), chunked transfer, and atomic rename
+(D-12). Built against `lsync_transport` commit
+`dd311d297bb5ba38fb18c5182ebddfb6ed72fa42`.
+
+**The condition it did not meet.** It ran over `adb reverse tcp:4917 tcp:4917`,
+a USB tunnel, with the phone dialling `127.0.0.1:4917`. **The LAN path is
+unproven.** D-01's manual `host:port` fallback has still never carried a
+connection between two machines.
+
+**Why.** The Wi-Fi does not bridge traffic between wireless clients. The phone's
+ARP for the laptop returns FAILED while its ARP for the router resolves; both
+devices reach the router and the internet; laptop routing to the phone correctly
+selects Wi-Fi and Tailscale is logged out, so D-20's wrong-interface story does
+not apply. Same SSID, same BSSID, same channel. BT Smart Hub Manager exposes no
+client-isolation setting, so there is nothing to switch off.
+
+**This narrows what D-01 proved.** Every cross-machine success recorded there was
+*multicast*, which this AP does forward. The iPhone enumerated and resolved the
+service but never opened a TCP connection. Unicast between two devices on this
+network has never worked, and was not tested until now.
+
+**Keygen, the number D-18 wanted.** 4199 ms on the Redmi against D-18's estimate
+of roughly a second on the laptop: **4.2x slower**. Running it off the UI thread
+was necessary rather than precautionary, since four seconds of frozen first launch
+with nothing on screen reads as a broken app. One caveat on the figure: it was
+read off a photograph of the handset, not captured as text. MIUI denied
+`pm clear` to the shell user, so the key could not be regenerated to capture it
+properly, and it remains a single sample.
+
+**What would close this.** Any network that bridges its clients: an Ethernet
+cable to the hub, a phone hotspot, or a different Wi-Fi. Until then the LAN half
+of D-01 stays a claim rather than a result.
 
 ---
 
