@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-07 (rev 20)
+Last updated: 2026-09-08 (rev 21)
 
 ## Problem
 
@@ -314,7 +314,7 @@ case it should be opt-in and clearable.
 
 ### D-07 Resume interrupted transfers, but not first
 
-**Status:** decided, sequenced, **both passes built (rev 20)**
+**Status:** decided, sequenced, **both passes built, amended rev 21**
 
 **Decision.** A transfer interrupted by a dropped connection resumes from its last
 confirmed offset. Implementation order: build fail-loudly-and-delete-the-partial
@@ -348,11 +348,72 @@ resumes to a digest identical to an uninterrupted one, checked against the bytes
 on disk rather than the sender's claim, and asserting that it genuinely resumed
 rather than quietly starting over.
 
-**Known limit.** A prefix digest can only be written when a session ends in a way
-the receiver catches, because SHA-256 state cannot be snapshotted mid-stream and
-recomputing it per checkpoint would cost a full read each time. A hard process
-kill therefore leaves an unverifiable partial, which the next attempt discards.
-Resume survives dropped connections and app exits, not `SIGKILL`.
+**Amended (rev 21): a hard kill resumes too.** Rev 20 recorded a known limit —
+that `SIGKILL` left an unresumable partial — and proposed a per-block digest list
+to close it. Both the limit and the proposal came from one conflation, which is
+worth stating plainly because it is the reason the actual fix is about ten lines:
+
+> **Crash consistency and tamper detection are different problems.** *Are the
+> first N bytes durably on disk?* is answered by D-12's flush ordering: the
+> receiver flushes before it records, so the recorded offset can never run ahead
+> of the file. That holds with no digest at all. *Are those bytes still the ones
+> we wrote?* is what the prefix digest answers, and it is a check, not a licence.
+> Requiring the second in order to get the first is what made a kill throw away
+> the whole partial.
+
+The prefix digest can only be computed when a session ends in a way the receiver
+catches, because SHA-256 state cannot be snapshotted mid-stream and recomputing
+it per checkpoint would cost a full read each time. So a periodic checkpoint
+carries no digest — and that is now fine. Two changes:
+
+1. **The sidecar write is atomic**: temporary file, flush, rename, the same
+   pattern `TrustStore._save` already used. A plain `writeAsString` is
+   open-with-truncate then write, so a kill inside that window left a truncated
+   record *and* had already destroyed the previous good one. `delete()` also
+   removes a stranded temporary, so a killed write leaves nothing behind (D-06).
+2. **`isResumable` is `offset > 0`.** A prefix digest is verified when present
+   and is not required. Everything else still gates: a readable v2 sidecar, a
+   matching name/size/whole-file digest, a `.part` at least that long, and
+   truncation of anything written past the recorded offset.
+
+**Why relaxing the gate is safe.** *The whole-file digest at the end always
+runs.* An unverified resume therefore cannot produce a corrupt file that passes;
+it can only append to bad bytes, fail the final check, and discard. The cost is
+bounded to one wasted transfer, and the failure is loud. This is the load-bearing
+argument for the whole amendment — the reason a missing early check downgrades an
+outcome rather than endangering one — and it should not have to be rederived.
+
+**Block-digest list: withdrawn.** A list of per-block digests in the sidecar
+would have made a killed partial verifiable up front. It is withdrawn, not
+deferred. It bought crash consistency that flush ordering already provides, and
+its only remaining value was moving the kill-then-edited case's failure earlier —
+converting one wasted transfer into a faster rejection — at roughly 32 KB of
+sidecar per 2 GB transferred plus a second integrity scheme to keep correct
+alongside the whole-file digest. Do not propose it again without new evidence:
+specifically, evidence that partials are being edited or corrupted in practice,
+or that the wasted-transfer cost is being paid often enough to matter.
+
+**Known limit, platform.** `temp → flush → rename` makes the *contents* durable
+and the swap single-step, but Dart exposes no way to `fsync` the containing
+directory, so on POSIX the rename itself is not guaranteed durable across a power
+cut or kernel panic. This is explicitly out of scope for the case being fixed:
+`SIGKILL` kills a process, not the page cache, so a rename that has returned is
+visible to every later reader. It would only matter for sudden machine death,
+where the cost is one lost checkpoint interval — the same cost a kill already has.
+
+**Tests (rev 21).** Two added, at 6/6 alongside the existing three: a partial
+written by hand with a digest-less checkpoint — exactly the on-disk state a kill
+leaves — resumes from its recorded offset; and the same partial with an edited
+byte runs to completion, fails the whole-file digest, and leaves nothing behind.
+Constructed on disk rather than by killing a real process, so the test does not
+depend on where the checkpoint interval happens to fall.
+
+One test bug surfaced with the change and is worth recording, because it was a
+correctness signal and not noise. Two waits polled `isResumable` as a proxy for
+*the receiver has finished preserving*. Relaxing the gate made a mid-transfer
+checkpoint satisfy that proxy, so the waits returned while the receiver still
+held the `.part` open. They now wait on the prefix digest, which is what they
+meant. The proxy was wrong before the change too; it was merely not observable.
 
 **Revisit if.** Resume proves to be a source of corruption bugs, in which case
 fail-loudly is a legitimate place to stop.
@@ -462,6 +523,20 @@ removed.
 offset survives an app restart, not just a reconnect. A temp directory elsewhere
 would need its own cleanup policy and would break when the destination is on a
 different filesystem.
+
+**Built (rev 21), and one invariant worth naming.** The sidecar holds size,
+whole-file digest and offset rather than a transfer ID — D-07 explains why the ID
+was dropped. The ordering rule is the part other entries lean on:
+
+> **Flush before you record.** The receiver flushes the `.part` to disk *and then*
+> writes the offset, never the reverse. So the recorded offset can never run ahead
+> of the bytes actually on disk, and a reader may trust everything below it.
+
+That one line is what makes a killed transfer resumable at all, and D-07's
+amendment is mostly the consequence of taking it seriously. Written down here
+because that is where it gets cited from. The sidecar write itself is
+temp-then-rename for the same reason the rename of the `.part` is atomic: a
+half-written record is worse than an old one.
 
 ### D-13 Integration tests run two instances against each other
 

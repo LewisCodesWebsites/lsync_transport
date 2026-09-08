@@ -165,9 +165,13 @@ void main() {
       final sidecar = TransferSidecar.forPartFile(
         p.join(downloads.path, 'interrupted.bin.part'),
       );
+      // Waits for the prefix digest, not merely for a resumable record. A
+      // periodic checkpoint is already on disk and already resumable at this
+      // point, so waiting on that would return while the receiver is still
+      // holding the .part open, and the next setUp could not delete it.
       for (var attempt = 0; attempt < 60; attempt++) {
         record = await sidecar.read();
-        if (record != null && record.isResumable) break;
+        if (record?.prefixSha256 != null) break;
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
 
@@ -177,11 +181,13 @@ void main() {
         reason: 'an interrupted transfer must keep its partial',
       );
       expect(record, isNotNull);
+      expect(record!.isResumable, isTrue);
       expect(
-        record!.isResumable,
-        isTrue,
-        reason: 'the sidecar must carry a prefix digest, or the next attempt '
-            'cannot check the partial before appending to it',
+        record.prefixSha256,
+        isNotNull,
+        reason: 'a caught interruption can finalise the running digest, so it '
+            'must record the early check even though resume no longer '
+            'requires one',
       );
       expect(record.offset, greaterThan(0));
 

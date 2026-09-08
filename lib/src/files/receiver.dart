@@ -74,8 +74,8 @@ class FileReceiver {
       await refuse('the receiving device declined the transfer');
     }
 
-    // How much of a previous attempt can be trusted. Everything past this is
-    // discarded, including a partial whose sidecar cannot vouch for it.
+    // How much of a previous attempt can be kept. Everything past this is
+    // discarded, along with a partial no sidecar describes.
     final resumeFrom = await _usableOffset(offer, partPath, sidecar);
 
     final handle = await File(partPath).open(
@@ -101,9 +101,10 @@ class FileReceiver {
 
     try {
       if (resumeFrom > 0) {
-        // One read of the partial, doing two jobs at once: it proves the bytes
-        // still hash to what the sidecar recorded, and it leaves the running
-        // digest positioned to continue over the rest of the file.
+        // Seeds the running digest with the bytes already on disk, so it can
+        // continue over the rest of the file and finish as a whole-file digest.
+        // That final check is what makes resuming on an unverified prefix
+        // bounded: a wasted transfer, never a corrupt file that passes.
         await _replayInto(digest, partPath, resumeFrom);
       }
 
@@ -226,9 +227,15 @@ class FileReceiver {
   /// Decides how many bytes of an existing partial may be kept.
   ///
   /// Returns zero unless every condition holds: a readable version 2 sidecar,
-  /// carrying a prefix digest, describing this exact file, with a `.part` at
-  /// least that long. Anything else discards, because appending to a partial
-  /// that cannot be checked is how resume turns into corruption.
+  /// naming a non-zero offset, describing this exact file, with a `.part` at
+  /// least that long.
+  ///
+  /// A prefix digest is verified when the record carries one, and its absence
+  /// is not disqualifying. A checkpoint written without one still names bytes
+  /// D-12's flush ordering guarantees are on disk; what it cannot do is prove
+  /// they were not edited since. Resuming on it is bounded rather than unsafe,
+  /// because the whole-file digest at the end always runs: an unverified resume
+  /// can waste one transfer, never produce a corrupt file that passes.
   static Future<int> _usableOffset(
     FileOffer offer,
     String partPath,
@@ -256,10 +263,13 @@ class FileReceiver {
       return 0;
     }
 
-    final actual = await _digestOfPrefix(partPath, record.offset);
-    if (actual != record.prefixSha256) {
-      await _discardPartial(part, sidecar);
-      return 0;
+    final expectedPrefix = record.prefixSha256;
+    if (expectedPrefix != null) {
+      final actual = await _digestOfPrefix(partPath, record.offset);
+      if (actual != expectedPrefix) {
+        await _discardPartial(part, sidecar);
+        return 0;
+      }
     }
 
     // Trim anything written past the verified offset. Those bytes were never

@@ -44,16 +44,56 @@ void main() {
     expect(record.isResumable, isTrue);
   });
 
-  test('a checkpoint without a prefix digest is not resumable', () async {
-    // Written periodically so an abandoned .part always has a sidecar beside
-    // it. It exists to be recognised, not to be trusted.
+  test('a checkpoint without a prefix digest is still resumable', () async {
+    // The record a hard kill leaves. It is resumable because crash consistency
+    // comes from D-12's flush ordering, not from the digest: the receiver
+    // flushes before it records, so these 50 bytes are durably on disk. The
+    // prefix digest answers a different question — whether they were edited
+    // since — and requiring it here is what used to make a kill lose the whole
+    // partial (D-07).
     final sidecar = TransferSidecar.forPartFile(
       p.join(directory.path, 'file.part'),
     );
     await sidecar.write(size: 100, sha256: 'a' * 64, offset: 50);
 
     final record = await sidecar.read();
-    expect(record!.isResumable, isFalse);
+    expect(record!.isResumable, isTrue);
+    expect(record.prefixSha256, isNull);
+  });
+
+  test('a checkpoint at offset zero has nothing to resume from', () async {
+    final sidecar = TransferSidecar.forPartFile(
+      p.join(directory.path, 'file.part'),
+    );
+    await sidecar.write(size: 100, sha256: 'a' * 64, offset: 0);
+
+    expect((await sidecar.read())!.isResumable, isFalse);
+  });
+
+  test('a write replaces the previous record in one step', () async {
+    // Temp-then-rename, so a process killed mid-write cannot leave a truncated
+    // record *and* destroy the good one it was replacing. Checked by its
+    // observable effects: no temporary is left behind, and the record that
+    // survives is whole.
+    final sidecar = TransferSidecar.forPartFile(
+      p.join(directory.path, 'file.part'),
+    );
+    await sidecar.write(size: 100, sha256: 'a' * 64, offset: 25);
+    await sidecar.write(size: 100, sha256: 'a' * 64, offset: 50);
+
+    expect((await sidecar.read())!.offset, 50);
+    expect(
+      await File('${sidecar.path}.tmp').exists(),
+      isFalse,
+      reason: 'the temporary must not outlive the write',
+    );
+
+    // A temporary stranded by a kill is cleaned up with the record it was
+    // replacing, rather than left in the destination directory (D-06).
+    await File('${sidecar.path}.tmp').writeAsString('half-written');
+    await sidecar.delete();
+    expect(await File(sidecar.path).exists(), isFalse);
+    expect(await File('${sidecar.path}.tmp').exists(), isFalse);
   });
 
   test('describes() distinguishes a same-named different file', () async {
