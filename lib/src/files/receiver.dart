@@ -75,13 +75,15 @@ class FileReceiver {
     }
 
     // How much of a previous attempt can be kept. Everything past this is
-    // discarded, along with a partial no sidecar describes.
-    final resumeFrom = await _usableOffset(offer, partPath, sidecar);
+    // discarded, along with a partial no sidecar describes. The digest comes
+    // back already seeded with those bytes, so the partial is read once.
+    final resume = await _resumePoint(offer, partPath, sidecar);
+    final resumeFrom = resume.offset;
 
     final handle = await File(partPath).open(
       mode: resumeFrom > 0 ? FileMode.append : FileMode.write,
     );
-    final digest = StreamingSha256();
+    final digest = resume.digest ?? StreamingSha256();
     var received = resumeFrom;
     var checkpoint = resumeFrom;
 
@@ -100,14 +102,6 @@ class FileReceiver {
     }
 
     try {
-      if (resumeFrom > 0) {
-        // Seeds the running digest with the bytes already on disk, so it can
-        // continue over the rest of the file and finish as a whole-file digest.
-        // That final check is what makes resuming on an unverified prefix
-        // bounded: a wasted transfer, never a corrupt file that passes.
-        await _replayInto(digest, partPath, resumeFrom);
-      }
-
       await session.send(<String, Object?>{
         't': msgFileAccept,
         'v': protocolVersion,
@@ -224,11 +218,12 @@ class FileReceiver {
     }
   }
 
-  /// Decides how many bytes of an existing partial may be kept.
+  /// Decides how many bytes of an existing partial may be kept, and hands back
+  /// a digest already seeded with them.
   ///
-  /// Returns zero unless every condition holds: a readable version 2 sidecar,
-  /// naming a non-zero offset, describing this exact file, with a `.part` at
-  /// least that long.
+  /// Returns [_ResumePoint.none] unless every condition holds: a readable
+  /// version 2 sidecar, naming a non-zero offset, describing this exact file,
+  /// with a `.part` at least that long.
   ///
   /// A prefix digest is verified when the record carries one, and its absence
   /// is not disqualifying. A checkpoint written without one still names bytes
@@ -236,7 +231,7 @@ class FileReceiver {
   /// they were not edited since. Resuming on it is bounded rather than unsafe,
   /// because the whole-file digest at the end always runs: an unverified resume
   /// can waste one transfer, never produce a corrupt file that passes.
-  static Future<int> _usableOffset(
+  static Future<_ResumePoint> _resumePoint(
     FileOffer offer,
     String partPath,
     TransferSidecar sidecar,
@@ -244,36 +239,56 @@ class FileReceiver {
     final part = File(partPath);
     if (!await part.exists()) {
       await sidecar.delete();
-      return 0;
+      return _ResumePoint.none;
     }
 
     final record = await sidecar.read();
     if (record == null || !record.isResumable) {
       await _discardPartial(part, sidecar);
-      return 0;
+      return _ResumePoint.none;
     }
     // Same name, different content. Discard rather than append, or the result
     // is a silently corrupt hybrid that only the final digest would catch.
     if (!record.describes(size: offer.size, sha256: offer.sha256)) {
       await _discardPartial(part, sidecar);
-      return 0;
+      return _ResumePoint.none;
     }
     if (await part.length() < record.offset) {
       await _discardPartial(part, sidecar);
-      return 0;
+      return _ResumePoint.none;
     }
 
+    // One pass over the partial, feeding up to two digests.
+    //
+    // [running] continues over the rest of the file and finishes as the
+    // whole-file digest. [check] exists only when there is a recorded prefix to
+    // compare against, and is spent immediately, because finish() closes the
+    // conversion and SHA-256 state cannot be snapshotted or copied. So the two
+    // cannot be one object — but they can share one read, and the read is the
+    // expensive half. Resume exists for large files on bad connections, which
+    // is exactly where reading the partial twice would have hurt most.
+    final running = StreamingSha256();
     final expectedPrefix = record.prefixSha256;
-    if (expectedPrefix != null) {
-      final actual = await _digestOfPrefix(partPath, record.offset);
-      if (actual != expectedPrefix) {
-        await _discardPartial(part, sidecar);
-        return 0;
-      }
+    final check = expectedPrefix == null ? null : StreamingSha256();
+    try {
+      await _readPrefix(partPath, record.offset, (block) {
+        running.add(block);
+        check?.add(block);
+      });
+    } on Object {
+      // Unreadable partway through, despite the length check above. Discarding
+      // is the safe direction, and the same one an unreadable sidecar takes.
+      await _discardPartial(part, sidecar);
+      return _ResumePoint.none;
+    }
+    if (check != null && check.finish() != expectedPrefix) {
+      await _discardPartial(part, sidecar);
+      return _ResumePoint.none;
     }
 
-    // Trim anything written past the verified offset. Those bytes were never
-    // vouched for and must not end up in the middle of the file.
+    // Trim anything written past the recorded offset. Those bytes were never
+    // vouched for and must not end up in the middle of the file. Safe to do
+    // after the read, which only ever touches the first [record.offset] bytes.
     if (await part.length() > record.offset) {
       final handle = await part.open(mode: FileMode.append);
       try {
@@ -282,7 +297,7 @@ class FileReceiver {
         await handle.close();
       }
     }
-    return record.offset;
+    return _ResumePoint(record.offset, running);
   }
 
   static Future<void> _discardPartial(
@@ -297,21 +312,7 @@ class FileReceiver {
     await sidecar.delete();
   }
 
-  /// Hashes the first [length] bytes of a file without holding them in memory.
-  static Future<String> _digestOfPrefix(String path, int length) async {
-    final digest = StreamingSha256();
-    await _readPrefix(path, length, digest.add);
-    return digest.finish();
-  }
-
-  /// Feeds an existing partial into [digest] so it can continue over the rest.
-  static Future<void> _replayInto(
-    StreamingSha256 digest,
-    String path,
-    int length,
-  ) =>
-      _readPrefix(path, length, digest.add);
-
+  /// Reads the first [length] bytes of a file without holding them in memory.
   static Future<void> _readPrefix(
     String path,
     int length,
@@ -378,6 +379,26 @@ class FileReceiver {
       // The sender is already gone; the local outcome is what mattered.
     }
   }
+}
+
+/// What an existing partial is worth: how many of its bytes survive, and a
+/// digest already carrying them.
+///
+/// The two travel together deliberately. An offset without its seeded digest
+/// invites a second read of the same bytes, which is the cost this type exists
+/// to remove.
+class _ResumePoint {
+  const _ResumePoint(this.offset, this.digest);
+
+  /// Nothing usable on disk. The caller starts a fresh digest from zero.
+  static const _ResumePoint none = _ResumePoint(0, null);
+
+  /// Bytes kept from a previous attempt.
+  final int offset;
+
+  /// Seeded with exactly those [offset] bytes and ready to continue over the
+  /// rest of the file. Null only when [offset] is zero.
+  final StreamingSha256? digest;
 }
 
 /// A failure caused by the bytes being wrong rather than the connection

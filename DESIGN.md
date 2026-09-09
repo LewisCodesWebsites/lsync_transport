@@ -415,6 +415,21 @@ checkpoint satisfy that proxy, so the waits returned while the receiver still
 held the `.part` open. They now wait on the prefix digest, which is what they
 meant. The proxy was wrong before the change too; it was merely not observable.
 
+**The partial is read once (rev 21).** Checking a partial and seeding the running
+digest with it were two separate passes over the same bytes. They are now one:
+the offset and a digest already carrying those bytes are returned together, so an
+offset can no longer be obtained without its seeded digest. Resume exists for
+large files on bad connections, so reading the partial twice doubled the cost of
+exactly the operation the feature makes cheap — and it did so on every reconnect,
+which on a flaky link is the common case rather than the rare one.
+
+Where a recorded prefix digest exists, that single read feeds two digest objects
+rather than one: `finish()` closes the chunked conversion, and SHA-256 state
+cannot be snapshotted or copied, so the value to compare and the state to
+continue from cannot be the same object. Two hashes over bytes already in memory
+is the cheap half; the read is the expensive half, and that is the half now paid
+once. A digest-less checkpoint — the post-kill case — needs only one digest.
+
 **Revisit if.** Resume proves to be a source of corruption bugs, in which case
 fail-loudly is a legitimate place to stop.
 
