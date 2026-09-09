@@ -44,6 +44,23 @@ positive before trusting a negative. A `dns-sd` browse that printed nothing was
 read as "the service is invisible" when the output had simply been swallowed by
 a pipe buffer.
 
+**A test that waits on a proxy asserts something other than what it claims.** It
+passes for the wrong reason until something shifts underneath it, and then fails
+somewhere unrelated to the change that exposed it. Wait on the condition you
+actually mean, even when a cheaper one is available and currently equivalent.
+
+Two waits polled `record.isResumable` as a stand-in for *the receiver has
+finished preserving the partial*. That held only because resumability happened to
+require a prefix digest, which only the final write produced. Relaxing the gate so
+a mid-transfer checkpoint is also resumable made the waits return while the
+receiver still held the `.part` open — and the failure surfaced as a **different**
+test's `setUp` being unable to delete the directory, on Windows, with a message
+about a file in use. The waits were already wrong before the gate moved; the
+coupling was simply not observable. They now wait on the prefix digest, which is
+what their own assertion text had claimed all along.
+
+The tell is a wait whose condition is not the thing the next line depends on.
+
 ## This machine
 
 **Never blanket-kill processes.** No `taskkill /F /IM dart.exe`. Scope cleanup
