@@ -1,6 +1,6 @@
 # Design doc: LAN clipboard and file sync
 
-Last updated: 2026-09-08 (rev 21)
+Last updated: 2026-09-09 (rev 22)
 
 ## Problem
 
@@ -181,6 +181,39 @@ both usable.
 **Cost.** A small amount of extra state: which pairing is currently the clipboard
 bond, and a way to change it.
 
+**Built (rev 22).** The bond reads and switches the `clipboardBond` field
+`TrustStore` has persisted and validated since pairing was built and which
+nothing had read until now. It is the only clipboard state that touches disk, and
+D-06 already declares it. Bonding to an unpaired fingerprint is refused, and
+unpairing the partner clears the bond: a bond to a device nobody confirmed is not
+a bond.
+
+**The bond is decided locally, not negotiated.** Each device stores its own and
+refuses updates from anyone else. The two ends can therefore disagree — switch a
+phone from the laptop to the desktop and the laptop still believes it is bonded.
+A negotiated bond would prevent that at the cost of a state machine on both
+sides; instead there is an explicit refusal carrying a reason, which buys the
+part that matters. *Rejected: silent refusal*, which is the same disagreement
+with no way for the stale side to learn about it — the failure would look like a
+clipboard that had simply stopped working.
+
+**Neither side pushes on reconnect.** The next copy syncs naturally. *Rejected:
+the reconnecting side pushes its current clipboard*, which risks clobbering
+something the user copied locally while the link was down; and *last-write-wins*,
+which needs a timestamp on every update and therefore a clock to reason about
+across two devices, for a race the user resolves themselves by copying again.
+
+**An unreachable partner costs one remembered item, not a queue.** A clipboard
+has a current value, not a backlog, so the pending slot has depth one and a newer
+copy replaces a waiting one rather than stacking behind it. Nothing accumulates,
+nothing is persisted, and it is dropped on close.
+
+One honest limit found while testing it: the slot holds an item when a send
+*raises*. A destroyed TCP socket accepts writes without raising, so a send into
+one looks successful and the item is dropped rather than remembered. The engine
+cannot detect that; what notices a dead peer is the read loop reaching EOF, which
+belongs to the caller that owns the session.
+
 **Revisit if.** Users turn out to want clipboard across three devices often enough
 to justify the confusion.
 
@@ -242,6 +275,11 @@ for a low-value feature. In-memory history delivers the useful part with none of
 the liability, and keeps the storage claim in D-06 true.
 
 **Cost.** History does not survive a restart.
+
+**Built (rev 22).** Twenty entries, newest first, each recording the content, the
+direction it travelled and the origin fingerprint. Cleared when the sync closes.
+A suppressed echo is not an entry — it is the same item arriving back, and
+recording it would fill the history with duplicates of whatever was copied last.
 
 **Revisit if.** Users ask for persistence often, and only alongside proper
 platform keychain integration.
@@ -522,6 +560,37 @@ clipboard.
 **Why.** Without this, A sets B, B observes a change and sets A, indefinitely.
 Hash comparison handles the case where both devices legitimately hold the same
 content, which a naive origin check does not.
+
+**Amended (rev 22): compare against the last hash applied or sent, not against
+the clipboard.** The original rule said a device ignores an update "whose hash
+matches its current clipboard". That is a correction rather than a refinement,
+for two reasons.
+
+*It could not be executed on the platform D-04 is about.* Evaluating it
+literally means reading the local clipboard on every inbound update — and
+reading the clipboard in the background is exactly what Android has blocked
+since Android 10, which is the whole premise of D-04. So the rule as written was
+unrunnable on the device the feature is for, and would have been discovered only
+when the loop failed to terminate on a handset.
+
+*It also had a race on the platforms where it could run.* Applying an incoming
+item sets the clipboard, which fires the local change watcher. The watcher runs
+before any read would reflect the new value, so the echo escapes the check and
+goes back out — the loop the rule exists to stop, on a machine where the rule was
+supposedly working.
+
+The engine therefore keeps the digest of the last content it applied or sent, in
+memory, and compares against that. It needs no clipboard read, so it runs
+identically on every platform, and it is set *before* the write rather than
+after, so the watcher's echo meets a value that already matches. Everything the
+original rule bought is kept, including the both-devices-hold-the-same-content
+case, which is why it was hash comparison rather than an origin check.
+
+**Origin is checked, but not trusted as declared.** The update carries an origin
+fingerprint (D-14) and the receiver compares it against the fingerprint the
+handshake actually proved (D-09), refusing a mismatch. A header field can say
+anything, and nothing in this design relays a clipboard on another device's
+behalf, so the two must agree.
 
 ---
 
@@ -1009,6 +1078,81 @@ with nothing on screen reads as a broken app. One caveat: the figure was read of
 a photograph of the handset rather than captured as text, and MIUI denies
 `pm clear` to the shell user so the key could not be regenerated to measure it
 again. It remains a single sample.
+
+### D-28 Clipboard carries text only in v1, capped at 1 MiB
+
+**Status:** decided, built (rev 22)
+
+**Decision.** Clipboard content is `text/plain` and nothing else. The content type
+travels on every update from the first version, so adding `image/png` later is not
+a protocol break. Content is capped at 1 MiB and refused whole above it, never
+truncated. Both ends validate independently.
+
+**Rejected.** *Text only with no type field:* one string cheaper today and a
+protocol version bump later, for a feature the doc already anticipates.
+*Text plus images now, in one frame:* a full-screen PNG is routinely 1 to 3 MB, so
+a single-frame image path would reject most of the case it was added for.
+*Text plus images now, chunked like a file:* no practical cap and it reuses the
+streaming path that already moves 2 GB files, so images are close to free on the
+wire — but they are expensive in the platform layer, which needs Android bitmap to
+PNG, Windows `CF_DIB` against `CF_PNG`, and X11 target negotiation, three pieces
+of native work in the layer this package deliberately does not have. *Truncating
+oversized content:* decisive against, because a clipboard that quietly delivers
+half a key or half a command is worse than one that delivers nothing. The user
+cannot see it happened until they paste, and by then the original is gone.
+
+**Why.** The screenshot case is the interesting one and it is a platform problem
+rather than a protocol problem. Reserving the type field costs one string and
+keeps the decision open; building the platform half now would drag OS clipboard
+code into a package that has none.
+
+**Cost.** Screenshots do not sync in v1. Copying something large — a file in an
+IDE, a long log — is refused rather than sent, and the user has to be told why.
+
+**Where the cap comes from.** 1 MiB is D-10's frame body cap, because v1 sends an
+update as a single frame with no chunked clipboard path. Content travels in the
+body rather than the header, which is what gives it 1 MiB rather than the 64 KiB a
+header gets. The frame reader enforces the same figure independently, so a peer's
+declared size is checked twice by two mechanisms that do not share code.
+
+**Revisit if.** The cap is actually hit in use, or images are wanted badly enough
+to pay for the platform layer.
+
+### D-29 The clipboard engine is handed a session and never owns one
+
+**Status:** decided, built (rev 22)
+
+**Decision.** `ClipboardSync` takes a live `PeerSession` and does not reconnect
+it. A dropped session ends the object; the app builds another when it has a new
+one. Frames are dispatched into it rather than pulled by it.
+
+**Rejected.** *The engine owns a session and reconnects:* reconnect policy is
+entangled with vendor power management — MIUI kills background services that stock
+Android leaves running — so the piece would have become untestable anywhere except
+on a handset, and CLAUDE.md already records that vendor policy is a confounder to
+rule out first rather than debug through. *The engine owns the read loop:* a
+session also carries file transfers, and two readers on one stream desynchronise
+it.
+
+**Why.** It keeps the hard part testable with `dart test` and fakes on both ends,
+and it puts reconnect where the platform knowledge is.
+
+**Cost.** The app is responsible for noticing a dead session and rebuilding, which
+is also the only place a destroyed socket is detectable (see D-03).
+
+**What PC-to-phone needs that phone-to-PC does not.** Nothing in the message
+vocabulary: an update is the same frame in either direction, and this was worth
+checking rather than assuming. The asymmetry is entirely in connection lifecycle.
+Phone-to-PC can dial at tap time, send, and hang up. PC-to-phone is automatic
+(D-04), which means the PC pushes unsolicited and the phone must already be
+connected — a standing session on exactly the platform most likely to kill one.
+That is a milestone-three problem, and naming it here is the point of the entry:
+it is a lifecycle question, not a protocol gap, so no field was added for it.
+
+**Where D-04's asymmetry actually lands.** In the shape of the clipboard
+interface, not in the protocol. Writing is always available; *watching* is not, so
+an Android implementation returns null for the change stream and the app drives
+sends from the notification tap instead. Both routes emit identical frames.
 
 ---
 

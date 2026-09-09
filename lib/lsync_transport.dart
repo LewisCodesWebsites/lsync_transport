@@ -1,10 +1,17 @@
 /// Transport layer for LAN clipboard and file sync.
 ///
 /// Discovery (D-01), pairing (D-02), TLS with pinned self-signed certificates
-/// (D-09), length-prefixed framing (D-10) and file transfer (D-12). No UI, no
-/// clipboard, no platform channels.
+/// (D-09), length-prefixed framing (D-10), file transfer (D-12) and clipboard
+/// sync (D-03, D-05, D-11). No UI, no platform channels: the OS clipboard is
+/// supplied by the app through [ClipboardAccess], the way the config directory
+/// is.
 library;
 
+export 'src/clipboard/bond.dart';
+export 'src/clipboard/clipboard_access.dart';
+export 'src/clipboard/history.dart';
+export 'src/clipboard/messages.dart';
+export 'src/clipboard/sync_engine.dart';
 export 'src/discovery/advertisement.dart';
 export 'src/discovery/browser.dart';
 export 'src/discovery/dns_wire.dart';

@@ -49,6 +49,23 @@ const String msgFileChunk = 'file-chunk';
 const String msgFileDone = 'file-done';
 const String msgFileResult = 'file-result';
 
+// Clipboard (D-03, D-05, D-11).
+
+/// Either side of the bond: this is my clipboard now.
+///
+/// The header carries the content type, the digest and the origin fingerprint;
+/// the content itself travels in the body, which is what gives it D-10's 1 MiB
+/// allowance rather than the 64 KiB a header gets.
+const String msgClipboardUpdate = 'clip-update';
+
+/// Refusing one update, with a reason, without closing the session.
+///
+/// The bond is decided locally rather than negotiated (D-03), so the two ends
+/// can disagree about who the partner is. This is what stops that disagreement
+/// being silent: a device that is no longer the partner is told so on its next
+/// send instead of pushing into nothing.
+const String msgClipboardRefused = 'clip-refused';
+
 /// Either side, at any point: the sender is abandoning the exchange.
 const String msgError = 'error';
 
